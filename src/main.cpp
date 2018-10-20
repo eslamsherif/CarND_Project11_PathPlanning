@@ -8,11 +8,48 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
 // for convenience
 using json = nlohmann::json;
+
+/* Test Code configurations */
+#define STRAIGHT_LINE_CODE_FROM_CLASS (STD_OFF)
+#define FOLLOW_LANE_CODE_FROM_CLASS   (STD_OFF)
+#define SMOOTH_TRAJ_CODE_FROM_CLASS   (STD_OFF)
+
+/* Module Properties and Periodicities */
+#define PERIODICITY_MS (0.02)
+
+/* lane properties */
+#define LANE_WIDTH (4.0)
+#define LANE_BEGIN(idx)  ( ( idx )       * LANE_WIDTH )
+#define LANE_CENTER(idx) ( ( idx + 0.5 ) * LANE_WIDTH )
+#define LANE_END(idx)    ( ( idx + 1.0 ) * LANE_WIDTH )
+
+/* Algorithm Configurable parameters */
+#define SEPERATION_GAP_M    (30.0)
+#define FUTURE_PTS_CNT      (50U)
+#define PRV_STAT_NRLY_EMPTY (2U)
+
+/* Speed limits */
+#define MAX_SPEED_LIMIT  (50.0)
+#define IDLE_SPEED_LIMIT (49.5)
+#define HIGH_SPEED_LIMIT (40.0)
+#define MID_SPEED_LIMIT  (30.0)
+#define LOW_SPEED_LIMIT  (20.0)
+#define MlPH_TO_MrPS     (2.24)
+
+/* Data structure parsing support */
+#define SNSR_FSN_ID_IDX   (0U)
+#define SNSR_FSN_X_IDX    (1U)
+#define SNSR_FSN_Y_IDX    (2U)
+#define SNSR_FSN_VX_IDX   (3U)
+#define SNSR_FSN_VY_IDX   (4U)
+#define SNSR_FSN_S_IDX    (5U)
+#define SNSR_FSN_D_IDX    (6U)
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -214,12 +251,12 @@ int main() {
 
       if (s != "") {
         auto j = json::parse(s);
-        
+
         string event = j[0].get<string>();
-        
+
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          
+
           // Main car's localization Data
             double car_x = j[1]["x"];
             double car_y = j[1]["y"];
@@ -227,22 +264,186 @@ int main() {
             double car_d = j[1]["d"];
             double car_yaw = j[1]["yaw"];
             double car_speed = j[1]["speed"];
-
             // Previous path data given to the Planner
             auto previous_path_x = j[1]["previous_path_x"];
             auto previous_path_y = j[1]["previous_path_y"];
-            // Previous path's end s and d values 
+            // Previous path's end s and d values
             double end_path_s = j[1]["end_path_s"];
             double end_path_d = j[1]["end_path_d"];
-
             // Sensor Fusion Data, a list of all other cars on the same side of the road.
             auto sensor_fusion = j[1]["sensor_fusion"];
 
             json msgJson;
-
             vector<double> next_x_vals;
             vector<double> next_y_vals;
 
+            #if(SMOOTH_TRAJ_CODE_FROM_CLASS == STD_ON)
+            /* Clean State */
+            next_x_vals.clear();
+            next_y_vals.clear();
+
+            int prev_size = previous_path_x.size();
+
+            /*start in lane 1 */
+            int lane_idx = 1;
+
+            /* have a reference velocity to target */
+            double ref_vel = MAX_SPEED_LIMIT;
+            #if 0
+            if(prev_size > 0) {
+              car_s = end_path_s;
+            }
+
+            bool too_close = false;
+
+            //find ref_vel to use
+            for(int i=0; i < sensor_fusion.size(); i++) {
+              //car in my lane
+              float d = sensor_fusion[i][SNSR_FSN_D_IDX];
+              if( ( d > LANE_BEGIN(lane_idx)) && ( d < LANE_END(lane_idx)) ) {
+                double vx = sensor_fusion[i][SNSR_FSN_VX_IDX];
+                double vy = sensor_fusion[i][SNSR_FSN_VY_IDX];
+
+                double speed = sqrt( vx*vx + vy*vy);
+                double curr_car_s = sensor_fusion[i][SNSR_FSN_S_IDX];
+
+                curr_car_s += ( (double) prev_size * PERIODICITY_MS * speed ); //predict car current S coordinates
+
+                if( ( curr_car_s > car_s ) && ( (curr_car_s - car_s) < SEPERATION_GAP_M ) ) {
+                  ref_vel = MID_SPEED_LIMIT; //mph
+                  //too_close = true;
+                }
+              }
+            }
+            #endif
+
+            #if 0
+            if(true == too_close) {
+              ref_vel -= .224;
+            }
+            else if(ref_vel < MAX_SPEED_LIMIT) {
+              ref_vel += .224;
+            }
+            #endif
+
+            vector<double> ptsx;
+            vector<double> ptsy;
+
+            double ref_x   = previous_path_x[prev_size - 1];
+            double ref_y   = previous_path_y[prev_size - 1];
+            double neg_ref_yaw = 0-deg2rad(car_yaw);
+
+            if(prev_size < PRV_STAT_NRLY_EMPTY) {
+              ref_x   = car_x;
+              ref_y   = car_y;
+
+              double prev_car_x = car_x - cos(car_yaw);
+              double prev_car_y = car_y - sin(car_yaw);
+
+              ptsx.pushback(prev_car_x);
+              ptsx.pushback(car_x);
+
+              ptsy.pushback(prev_car_y);
+              ptsy.pushback(car_y);
+            }
+            else {
+              double prev_ref_x = previous_path_x[prev_size - 2];
+              double prev_ref_y = previous_path_y[prev_size - 2];
+
+              ptsx.pushback(prev_ref_x);
+              ptsx.pushback(ref_x);
+
+              ptsy.pushback(prev_ref_y);
+              ptsy.pushback(ref_y);
+            }
+
+            vector<double> next_wp0 = getXY(car_s + (SEPERATION_GAP_M)      , LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp1 = getXY(car_s + (SEPERATION_GAP_M * 2.0), LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp2 = getXY(car_s + (SEPERATION_GAP_M * 3.0), LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+            ptsx.pushback(next_wp0[0]);
+            ptsx.pushback(next_wp1[0]);
+            ptsx.pushback(next_wp2[0]);
+
+            ptsy.pushback(next_wp0[1]);
+            ptsy.pushback(next_wp1[1]);
+            ptsy.pushback(next_wp2[1]);
+
+            for(int i = 0; i < ptsx.size(); i++) {
+              double shift_x = ptsx[i] - ref_x;
+              double shift_y = ptsy[i] - ref_y;
+
+              double
+              ptsx[i] = ((shift_x * cos( neg_ref_yaw )) - (shift_y * sin( neg_ref_yaw )))
+              ptsy[i] = ((shift_x * sin( neg_ref_yaw )) + (shift_y * cos( neg_ref_yaw )))
+            }
+
+            tk::spline s;
+            s.set_points(ptsx, ptsy);
+
+            for(int i = 0; i < prev_size; i++) {
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+
+            double target_x = SEPERATION_GAP_M;
+            double target_y = s(target_x);
+            double target_dist = distance(0.0, 0.0, target_x, target_y);
+
+            double x_add_on = 0.0;
+            double N = ( target_dist / (PERIODICITY_MS * ref_vel / MlPH_TO_MrPS) );
+            double step_size = target_x / N;
+
+            for(int i=1; i <= 50 - prev_size; i++) {
+              double x_point = x_add_on + step_size;
+              double y_point = s(x_point);
+
+              x_add_on = x_point;
+
+              double x_ref = x_point;
+              double y_ref = y_point;
+
+              x_point = ( ( x_ref * cos( ref_yaw ) ) - ( y_ref * sin( ref_yaw) ) );
+              y_point = ( ( x_ref * sin( ref_yaw ) ) + ( y_ref * cos( ref_yaw) ) );
+
+              x_point += ref_x;
+              y_point += ref_y;
+
+              next_x_vals.pushback(x_point);
+              next_y_vals.pushback(y_point);
+            }
+            #endif
+
+            #if (FOLLOW_LANE_CODE_FROM_CLASS == STD_ON)
+            double dist_inc = 0.4;
+
+            //Clean state
+            next_x_vals.clear();
+            next_y_vals.clear();
+
+            for(int i = 0; i < FUTURE_PTS_CNT; i++) {
+              next_s = car_s + (i+1) * dist_inc;
+              next_d = LANE_CENTER(1);
+
+              vector<double> next_xy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+              next_x_vals.push_back(next_xy[0]);
+              next_y_vals.push_back(next_xy[1]);
+            }
+            #endif
+
+            #if (STRAIGHT_LINE_CODE_FROM_CLASS == STD_ON)
+            double dist_inc = 0.5;
+
+            //Clean state
+            next_x_vals.clear();
+            next_y_vals.clear();
+
+            for(int i = 0; i < FUTURE_PTS_CNT; i++) {
+              next_x_vals.push_back(car_x+(dist_inc*i)*cos(deg2rad(car_yaw)));
+              next_y_vals.push_back(car_y+(dist_inc*i)*sin(deg2rad(car_yaw)));
+            }
+            #endif
 
             // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
             msgJson["next_x"] = next_x_vals;
@@ -252,7 +453,7 @@ int main() {
 
             //this_thread::sleep_for(chrono::milliseconds(1000));
             ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-          
+
         }
       } else {
         // Manual driving
