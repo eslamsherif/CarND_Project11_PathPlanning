@@ -21,21 +21,36 @@ using json = nlohmann::json;
 /* Test Code configurations */
 #define STRAIGHT_LINE_CODE_FROM_CLASS (STD_OFF)
 #define FOLLOW_LANE_CODE_FROM_CLASS   (STD_OFF)
-#define SMOOTH_TRAJ_CODE_FROM_CLASS   (STD_ON)
+#define SMOOTH_TRAJ_CODE_FROM_CLASS   (STD_OFF)
+#define SMOOTH_TRAJ_OWN_OPTIMIZATION  (STD_OFF)
 
 /* Module Properties and Periodicities */
 #define PERIODICITY_MS (0.02)
+#define EMPTY_LIST (0U)
+#define NRLY_EMPTY (2U)
 
 /* lane properties */
 #define LANE_WIDTH (4.0)
 #define LANE_BEGIN(idx)  ( ( idx )       * LANE_WIDTH )
 #define LANE_CENTER(idx) ( ( idx + 0.5 ) * LANE_WIDTH )
 #define LANE_END(idx)    ( ( idx + 1.0 ) * LANE_WIDTH )
+#define LANE_IDX(car_d)  ( (int) ( car_d / LANE_WIDTH ) )
+#define LANE_1 (0U)
+#define LANE_2 (1U)
+#define LANE_3 (2U)
 
 /* Algorithm Configurable parameters */
 #define SEPERATION_GAP_M    (30.0)
 #define FUTURE_PTS_CNT      (50U)
-#define PRV_STAT_NRLY_EMPTY (2U)
+
+/* Car length is 4.8m, width is 2.5m and lane width is 4m */
+/* from symmetry 2.4 (mycar) + 2.4 (threatcar) + 0.7 (minimum_safe_gap) */
+#define LOG_DANGER_GAP_M     (5.5)
+#define LOG_NEIGHBOUR_GAP_M  (10.0)
+#define LOG_SEPERATION_GAP_M (40.0)
+/* from symmetry 1.25 (mycar) + 1.25 (threatcar) + 0.7 (minimum_safe_gap) */
+#define LAT_DANGER_GAP_M (3.2)
+#define LAT_NEIGHBOUR_GAP_M (5.0)
 
 /* Speed limits */
 #define MAX_SPEED_LIMIT  (50.0)
@@ -44,6 +59,8 @@ using json = nlohmann::json;
 #define MID_SPEED_LIMIT  (30.0)
 #define LOW_SPEED_LIMIT  (20.0)
 #define MlPH_TO_MrPS     (2.24)
+#define MAX_ACC          (0.224)
+#define MAX_DEACC        (-0.224)
 
 /* Data structure parsing support */
 #define SNSR_FSN_ID_IDX   (0U)
@@ -58,6 +75,21 @@ using json = nlohmann::json;
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
+
+struct car_properties {
+  int idx;
+  double x;
+  double y;
+  double vx;
+  double vy;
+  double v;
+  double s;
+  double d;
+};
+
+//from http://www.cplusplus.com/forum/general/97555/
+//TODO: check if asc or des order needed.
+bool carProp_Compare(car_properties lhs, car_properties rhs) { return lhs.s < rhs.s; }
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -280,15 +312,276 @@ int main() {
             vector<double> next_x_vals;
             vector<double> next_y_vals;
 
+            int prev_size = previous_path_x.size();
+
+            int lane_idx = LANE_IDX(car_d);
+
+            #if(SMOOTH_TRAJ_OWN_OPTIMIZATION == STD_ON)
+            static double target_Velocity = 0.0;
+            double accel_val = 0.0;
+
+            bool lane_open_pts[3U][3U] = {{false,false,false},{false,false,false},{false,false,false}};
+
+            /* 1) Sort All surronding cars by distance */
+            vector <car_properties> immediate_threat;
+            vector <car_properties> surronding_cars;
+            vector <car_properties> lane1_infront;
+            vector <car_properties> lane2_infront;
+            vector <car_properties> lane3_infront;
+
+            for(int i=0; i < sensor_fusion.size(); i++) {
+              car_properties temp;
+
+              temp.idx = sensor_fusion[i][SNSR_FSN_ID_IDX];
+              temp.x   = sensor_fusion[i][SNSR_FSN_X_IDX];
+              temp.y   = sensor_fusion[i][SNSR_FSN_Y_IDX];
+              temp.vx  = sensor_fusion[i][SNSR_FSN_VX_IDX];
+              temp.vy  = sensor_fusion[i][SNSR_FSN_VY_IDX];
+              temp.s   = sensor_fusion[i][SNSR_FSN_S_IDX];
+              temp.d   = sensor_fusion[i][SNSR_FSN_D_IDX];
+
+              double vx = sensor_fusion[i][SNSR_FSN_VX_IDX];
+              double vy = sensor_fusion[i][SNSR_FSN_VY_IDX];
+
+            /* 1.1) */
+              double threat_speed = sqrt( vx*vx + vy*vy);
+              int threat_car_lane_idx = LANE_IDX(temp.d);
+
+              double threat_car_s = sensor_fusion[i][SNSR_FSN_S_IDX];
+              threat_car_s += ( (double) prev_size * PERIODICITY_MS * threat_speed ); //predict threat car current S coordinates
+
+              temp.v = sensor_fusion[i][];
+
+              double s_diff = fabs(threat_car_s - car_s);
+              double d_diff = fabs(temp.d - car_d);
+
+              if( ( (s_diff) < LOG_DANGER_GAP_M ) || ( (d_diff) < LAT_DANGER_GAP_M ) ) {
+                immediate_threat.push_back(temp);
+              }
+              else if( ( (s_diff) < LOG_NEIGHBOUR_GAP_M ) || ( (d_diff) < LAT_NEIGHBOUR_GAP_M ) ) {
+                surronding_cars.push_back(temp);
+              }
+              else if ( ( threat_car_s > car_s ) ) {
+                if ( ( threat_car_lane_idx == LANE_1 ) ) {
+                  lane1_infront.push_back(temp);
+                }
+                else if ( ( threat_car_lane_idx == LANE_2 ) ) {
+                  lane2_infront.push_back(temp);
+                }
+                else {
+                  lane3_infront.push_back(temp);
+                }
+              }
+
+              /* Remaining case is that sensed car is far behind us and this is not very important */
+            }
+
+            /* 2) Mark open spots infront of car       */
+            switch(lane_idx) {
+              case LANE_1:
+                //TODO: lot of duplicate code in below segment, consider function or macro.
+                /* check lane 1 */
+                if(lane1_infront.size() != EMPTY_LIST) {
+                  sort(lane1_infront.begin(), lane1_infront.end(), carProp_Compare);
+                  int temp = ( lane1_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
+                  for(int i = temp, i > 0U; i--) {
+                    lane_open_pts[i][LANE_1] = true;
+                  }
+                }
+                /* check lane 2 */
+                if(lane2_infront.size() != EMPTY_LIST) {
+                  sort(lane2_infront.begin(), lane2_infront.end(), carProp_Compare);
+                  int temp = ( lane2_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
+                  for(int i = temp, i >= 0U; i--) {
+                    lane_open_pts[i][LANE_2] = true;
+                  }
+                }
+                /* lane 3 already closed */
+                break;
+              case LANE_2:
+                /* check lane 1 */
+                if(lane1_infront.size() != EMPTY_LIST) {
+                  sort(lane1_infront.begin(), lane1_infront.end(), carProp_Compare);
+                  int temp = ( lane1_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
+                  for(int i = temp, i >= 0U; i--) {
+                    lane_open_pts[i][LANE_1] = true;
+                  }
+                }
+                /* check lane 2 */
+                if(lane2_infront.size() != EMPTY_LIST) {
+                  sort(lane2_infront.begin(), lane2_infront.end(), carProp_Compare);
+                  int temp = ( lane2_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
+                  for(int i = temp, i >= 0U; i--) {
+                    lane_open_pts[i][LANE_2] = true;
+                  }
+                }
+                /* check lane 3 */
+                if(lane3_infront.size() != EMPTY_LIST) {
+                  sort(lane3_infront.begin(), lane3_infront.end(), carProp_Compare);
+                  int temp = ( lane3_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
+                  for(int i = temp, i >= 0U; i--) {
+                    lane_open_pts[i][LANE_3] = true;
+                  }
+                }
+                break;
+              case LANE_3:
+                /* lane 1 already closed */
+                /* check lane 2 */
+                if(lane2_infront.size() != EMPTY_LIST) {
+                  sort(lane2_infront.begin(), lane2_infront.end(), carProp_Compare);
+                  int temp = ( lane2_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
+                  for(int i = temp, i >= 0U; i--) {
+                    lane_open_pts[i][LANE_2] = true;
+                  }
+                }
+                /* check lane 3 */
+                if(lane3_infront.size() != EMPTY_LIST) {
+                  sort(lane3_infront.begin(), lane3_infront.end(), carProp_Compare);
+                  int temp = ( lane3_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
+                  for(int i = temp, i >= 0U; i--) {
+                    lane_open_pts[i][LANE_3] = true;
+                  }
+                }
+                break;
+            }
+
+            /* 3) Program is aware of environment (cars and open spaces),it can take action to immdeiate threats first */
+            if( immediate_threat.size() != EMPTY_LIST ) {
+              accel_val = MAX_DEACC;
+              sort(immediate_threat.begin(), immediate_threat.end(), carProp_Compare);
+
+              car_properties temp = immediate_threat[0];
+              if(temp.d > car_d) { /* threat is approaching from the right */
+                for(int i = 2U; i < 0U; i--) { /* Search for farthest point */
+                  for (int j = 0U; j > 1U; j++)) { /* on the left and center lanes */
+                    if(lane_open_pts[i][j] == true) {
+                      /* found a suitable point to escape */
+                      car_d = LANE_CENTER(j);
+                    }
+                  }
+                }
+              }
+              else { /* threat is approaching from the left */
+                for(int i = 2U; i < 0U; i--) {   /* Search for farthest point */
+                  for (int j = 1U; j > 0U; j--)) {  /* on the right and center lane */
+                    if(lane_open_pts[i][j] == true) {
+                      /* found a suitable point to escape */
+                      car_d = LANE_CENTER(j);
+                    }
+                  }
+                }
+              }
+            }
+            else { /* No Immediate threat, optimize course for maximum speed. */
+              accel_val = MAX_ACC;
+              /* 4) Plane to maximize car speed but prioritize staying in same lane if more than one option is open. */
+              for(int i = 2U; i < 0U; i--) {   /* Search for farthest point */
+                for (int j = 1U; j > 0U; j--)) {  /* on the right and center lane */
+                  if(lane_open_pts[i][j] == true) {
+                    car_d = LANE_CENTER(j);
+                  }
+                }
+              }
+            }
+
+            //TODO: is this needed ?
+            if(prev_size > 0) {
+              car_s = end_path_s;
+            }
+
+            target_Velocity += accel_val;
+
+            vector<double> ptsx;
+            vector<double> ptsy;
+
+            double ref_x   = car_x;
+            double ref_y   = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+            double neg_ref_yaw = 0-deg2rad(car_yaw);
+
+
+            if(prev_size < NRLY_EMPTY) {
+              double prev_car_x = car_x - cos(car_yaw);
+              double prev_car_y = car_y - sin(car_yaw);
+
+              ptsx.push_back(prev_car_x);
+              ptsx.push_back(car_x);
+
+              ptsy.push_back(prev_car_y);
+              ptsy.push_back(car_y);
+            }
+            else {
+              ref_x   = previous_path_x[prev_size - 1];
+              ref_y   = previous_path_y[prev_size - 1];
+              double prev_ref_x = previous_path_x[prev_size - 2];
+              double prev_ref_y = previous_path_y[prev_size - 2];
+
+              ptsx.push_back(prev_ref_x);
+              ptsx.push_back(ref_x);
+
+              ptsy.push_back(prev_ref_y);
+              ptsy.push_back(ref_y);
+            }
+
+            vector<double> next_wp0 = getXY(car_s + (SEPERATION_GAP_M)      , LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp1 = getXY(car_s + (SEPERATION_GAP_M * 2.0), LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp2 = getXY(car_s + (SEPERATION_GAP_M * 3.0), LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+            ptsx.push_back(next_wp0[0]);
+            ptsx.push_back(next_wp1[0]);
+            ptsx.push_back(next_wp2[0]);
+
+            ptsy.push_back(next_wp0[1]);
+            ptsy.push_back(next_wp1[1]);
+            ptsy.push_back(next_wp2[1]);
+
+            for(int i = 0; i < ptsx.size(); i++) {
+              double shift_x = ptsx[i] - ref_x;
+              double shift_y = ptsy[i] - ref_y;
+
+              ptsx[i] = ((shift_x * cos( neg_ref_yaw )) - (shift_y * sin( neg_ref_yaw )));
+              ptsy[i] = ((shift_x * sin( neg_ref_yaw )) + (shift_y * cos( neg_ref_yaw )));
+            }
+
+            tk::spline s;
+            s.set_points(ptsx, ptsy);
+
+            for(int i = 0; i < prev_size; i++) {
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+
+            double target_x = SEPERATION_GAP_M;
+            double target_y = s(target_x);
+            double target_dist = distance(0.0, 0.0, target_x, target_y);
+
+            double x_add_on = 0.0;
+            double N = ( target_dist / (PERIODICITY_MS * ref_vel / MlPH_TO_MrPS) );
+            double step_size = target_x / N;
+
+            for(int i=1; i <= 50 - prev_size; i++) {
+              double x_point = x_add_on + step_size;
+              double y_point = s(x_point);
+
+              x_add_on = x_point;
+
+              double x_ref = x_point;
+              double y_ref = y_point;
+
+              x_point = ( ( x_ref * cos( ref_yaw ) ) - ( y_ref * sin( ref_yaw) ) );
+              y_point = ( ( x_ref * sin( ref_yaw ) ) + ( y_ref * cos( ref_yaw) ) );
+
+              x_point += ref_x;
+              y_point += ref_y;
+
+              next_x_vals.push_back(x_point);
+              next_y_vals.push_back(y_point);
+            #endif
+
             #if(SMOOTH_TRAJ_CODE_FROM_CLASS == STD_ON)
             /* Clean State */
             next_x_vals.clear();
             next_y_vals.clear();
-
-            int prev_size = previous_path_x.size();
-
-            /*start in lane 1 */
-            int lane_idx = 1;
 
             /* have a reference velocity to target */
             #ifdef CONSTANTSPEED
@@ -311,12 +604,12 @@ int main() {
                 double vx = sensor_fusion[i][SNSR_FSN_VX_IDX];
                 double vy = sensor_fusion[i][SNSR_FSN_VY_IDX];
 
-                double speed = sqrt( vx*vx + vy*vy);
-                double curr_car_s = sensor_fusion[i][SNSR_FSN_S_IDX];
+                double threat_speed = sqrt( vx*vx + vy*vy);
+                double threat_car_s = sensor_fusion[i][SNSR_FSN_S_IDX];
 
-                curr_car_s += ( (double) prev_size * PERIODICITY_MS * speed ); //predict car current S coordinates
+                threat_car_s += ( (double) prev_size * PERIODICITY_MS * threat_speed ); //predict car current S coordinates
 
-                if( ( curr_car_s > car_s ) && ( (curr_car_s - car_s) < SEPERATION_GAP_M ) ) {
+                if( ( threat_car_s > car_s ) && ( (threat_car_s - car_s) < SEPERATION_GAP_M ) ) {
                   //ref_vel = MID_SPEED_LIMIT; //mph
                   too_close = true;
                 }
@@ -340,9 +633,9 @@ int main() {
             double ref_y   = car_y;
             double ref_yaw = deg2rad(car_yaw);
             double neg_ref_yaw = 0-deg2rad(car_yaw);
-            
 
-            if(prev_size < PRV_STAT_NRLY_EMPTY) {
+
+            if(prev_size < NRLY_EMPTY) {
               double prev_car_x = car_x - cos(car_yaw);
               double prev_car_y = car_y - sin(car_yaw);
 
