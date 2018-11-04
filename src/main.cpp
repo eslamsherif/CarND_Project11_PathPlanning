@@ -9,6 +9,7 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
+#include <cmath>
 
 using namespace std;
 
@@ -22,7 +23,7 @@ using json = nlohmann::json;
 #define STRAIGHT_LINE_CODE_FROM_CLASS (STD_OFF)
 #define FOLLOW_LANE_CODE_FROM_CLASS   (STD_OFF)
 #define SMOOTH_TRAJ_CODE_FROM_CLASS   (STD_OFF)
-#define SMOOTH_TRAJ_OWN_OPTIMIZATION  (STD_OFF)
+#define SMOOTH_TRAJ_OWN_OPTIMIZATION  (STD_ON)
 
 /* Module Properties and Periodicities */
 #define PERIODICITY_MS (0.02)
@@ -42,6 +43,7 @@ using json = nlohmann::json;
 /* Algorithm Configurable parameters */
 #define SEPERATION_GAP_M    (30.0)
 #define FUTURE_PTS_CNT      (50U)
+#define LOOK_AHEAD_CNT      (3U)
 
 /* Car length is 4.8m, width is 2.5m and lane width is 4m */
 /* from symmetry 2.4 (mycar) + 2.4 (threatcar) + 0.7 (minimum_safe_gap) */
@@ -317,10 +319,11 @@ int main() {
             int lane_idx = LANE_IDX(car_d);
 
             #if(SMOOTH_TRAJ_OWN_OPTIMIZATION == STD_ON)
+            cout << "Test1" << endl;
             static double target_Velocity = 0.0;
             double accel_val = 0.0;
 
-            bool lane_open_pts[3U][3U] = {{false,false,false},{false,false,false},{false,false,false}};
+            bool lane_open_pts[LOOK_AHEAD_CNT][LOOK_AHEAD_CNT] = {0U};
 
             /* 1) Sort All surronding cars by distance */
             vector <car_properties> immediate_threat;
@@ -342,6 +345,7 @@ int main() {
 
               double vx = sensor_fusion[i][SNSR_FSN_VX_IDX];
               double vy = sensor_fusion[i][SNSR_FSN_VY_IDX];
+              cout << "Test2" << endl;
 
             /* 1.1) */
               double threat_speed = sqrt( vx*vx + vy*vy);
@@ -350,7 +354,8 @@ int main() {
               double threat_car_s = sensor_fusion[i][SNSR_FSN_S_IDX];
               threat_car_s += ( (double) prev_size * PERIODICITY_MS * threat_speed ); //predict threat car current S coordinates
 
-              temp.v = sensor_fusion[i][];
+              temp.v = threat_speed;
+              cout << "Test3" << endl;
 
               double s_diff = fabs(threat_car_s - car_s);
               double d_diff = fabs(temp.d - car_d);
@@ -361,7 +366,7 @@ int main() {
               else if( ( (s_diff) < LOG_NEIGHBOUR_GAP_M ) || ( (d_diff) < LAT_NEIGHBOUR_GAP_M ) ) {
                 surronding_cars.push_back(temp);
               }
-              else if ( ( threat_car_s > car_s ) ) {
+              else if ( ( threat_car_s > car_s ) && ( ( threat_car_s - car_s ) < (LOG_SEPERATION_GAP_M * LOOK_AHEAD_CNT) ) ) {
                 if ( ( threat_car_lane_idx == LANE_1 ) ) {
                   lane1_infront.push_back(temp);
                 }
@@ -372,8 +377,9 @@ int main() {
                   lane3_infront.push_back(temp);
                 }
               }
+              cout << "Test4" << endl;
 
-              /* Remaining case is that sensed car is far behind us and this is not very important */
+              /* Remaining cases is that sensed car is either far ahead of us or far behind us and this is not very important */
             }
 
             /* 2) Mark open spots infront of car       */
@@ -382,17 +388,19 @@ int main() {
                 //TODO: lot of duplicate code in below segment, consider function or macro.
                 /* check lane 1 */
                 if(lane1_infront.size() != EMPTY_LIST) {
+                  cout << "Test41" << endl;
                   sort(lane1_infront.begin(), lane1_infront.end(), carProp_Compare);
-                  int temp = ( lane1_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
-                  for(int i = temp, i > 0U; i--) {
+                  int temp = ( fmod(lane1_infront[0].s , LOG_SEPERATION_GAP_M) ) - 1U;
+                  for(int i = temp; i > 0U; i--) {
                     lane_open_pts[i][LANE_1] = true;
                   }
                 }
                 /* check lane 2 */
                 if(lane2_infront.size() != EMPTY_LIST) {
+                  cout << "Test42" << endl;
                   sort(lane2_infront.begin(), lane2_infront.end(), carProp_Compare);
-                  int temp = ( lane2_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
-                  for(int i = temp, i >= 0U; i--) {
+                  int temp = ( fmod(lane2_infront[0].s , LOG_SEPERATION_GAP_M) ) - 1U;
+                  for(int i = temp; i >= 0U; i--) {
                     lane_open_pts[i][LANE_2] = true;
                   }
                 }
@@ -401,25 +409,37 @@ int main() {
               case LANE_2:
                 /* check lane 1 */
                 if(lane1_infront.size() != EMPTY_LIST) {
+                  cout << "Test43" << endl;
                   sort(lane1_infront.begin(), lane1_infront.end(), carProp_Compare);
-                  int temp = ( lane1_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
-                  for(int i = temp, i >= 0U; i--) {
+                  cout << "Test431" << endl;
+                  int temp = ( fmod(lane1_infront[0].s , LOG_SEPERATION_GAP_M) ) - 1U;
+                  cout << "Test432" << endl;
+                  for(int i = temp; i >= 0U; i--) {
+                  cout << "Test433" << endl;
                     lane_open_pts[i][LANE_1] = true;
                   }
                 }
                 /* check lane 2 */
                 if(lane2_infront.size() != EMPTY_LIST) {
+                  cout << "Test44" << endl;
                   sort(lane2_infront.begin(), lane2_infront.end(), carProp_Compare);
-                  int temp = ( lane2_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
-                  for(int i = temp, i >= 0U; i--) {
+                  cout << "Test441" << endl;
+                  int temp = ( fmod(lane2_infront[0].s , LOG_SEPERATION_GAP_M) ) - 1U;
+                  cout << "Test442" << endl;
+                  for(int i = temp; i >= 0U; i--) {
+                  cout << "Test443" << endl;
                     lane_open_pts[i][LANE_2] = true;
                   }
                 }
                 /* check lane 3 */
                 if(lane3_infront.size() != EMPTY_LIST) {
+                  cout << "Test45" << endl;
                   sort(lane3_infront.begin(), lane3_infront.end(), carProp_Compare);
-                  int temp = ( lane3_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
-                  for(int i = temp, i >= 0U; i--) {
+                  cout << "Test451" << endl;
+                  int temp = ( fmod(lane3_infront[0].s , LOG_SEPERATION_GAP_M) ) - 1U;
+                  for(int i = temp; i >= 0U; i--) {
+                  cout << "Test452" << lane3_infront[0].s << " " << LOG_SEPERATION_GAP_M << endl;
+                  cout << "Test453" << temp << " " << i << endl;
                     lane_open_pts[i][LANE_3] = true;
                   }
                 }
@@ -428,22 +448,25 @@ int main() {
                 /* lane 1 already closed */
                 /* check lane 2 */
                 if(lane2_infront.size() != EMPTY_LIST) {
+                  cout << "Test46" << endl;
                   sort(lane2_infront.begin(), lane2_infront.end(), carProp_Compare);
-                  int temp = ( lane2_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
-                  for(int i = temp, i >= 0U; i--) {
+                  int temp = ( fmod(lane2_infront[0].s , LOG_SEPERATION_GAP_M) ) - 1U;
+                  for(int i = temp; i >= 0U; i--) {
                     lane_open_pts[i][LANE_2] = true;
                   }
                 }
                 /* check lane 3 */
                 if(lane3_infront.size() != EMPTY_LIST) {
+                  cout << "Test47" << endl;
                   sort(lane3_infront.begin(), lane3_infront.end(), carProp_Compare);
-                  int temp = ( lane3_infront[0].s % LOG_SEPERATION_GAP_M ) - 1U;
-                  for(int i = temp, i >= 0U; i--) {
+                  int temp = ( fmod(lane3_infront[0].s , LOG_SEPERATION_GAP_M) ) - 1U;
+                  for(int i = temp; i >= 0U; i--) {
                     lane_open_pts[i][LANE_3] = true;
                   }
                 }
                 break;
             }
+            cout << "Test5" << endl;
 
             /* 3) Program is aware of environment (cars and open spaces),it can take action to immdeiate threats first */
             if( immediate_threat.size() != EMPTY_LIST ) {
@@ -453,7 +476,7 @@ int main() {
               car_properties temp = immediate_threat[0];
               if(temp.d > car_d) { /* threat is approaching from the right */
                 for(int i = 2U; i < 0U; i--) { /* Search for farthest point */
-                  for (int j = 0U; j > 1U; j++)) { /* on the left and center lanes */
+                  for (int j = 0U; j > 1U; j++) { /* on the left and center lanes */
                     if(lane_open_pts[i][j] == true) {
                       /* found a suitable point to escape */
                       car_d = LANE_CENTER(j);
@@ -463,7 +486,7 @@ int main() {
               }
               else { /* threat is approaching from the left */
                 for(int i = 2U; i < 0U; i--) {   /* Search for farthest point */
-                  for (int j = 1U; j > 0U; j--)) {  /* on the right and center lane */
+                  for (int j = 1U; j > 0U; j--) {  /* on the right and center lane */
                     if(lane_open_pts[i][j] == true) {
                       /* found a suitable point to escape */
                       car_d = LANE_CENTER(j);
@@ -476,13 +499,14 @@ int main() {
               accel_val = MAX_ACC;
               /* 4) Plane to maximize car speed but prioritize staying in same lane if more than one option is open. */
               for(int i = 2U; i < 0U; i--) {   /* Search for farthest point */
-                for (int j = 1U; j > 0U; j--)) {  /* on the right and center lane */
+                for (int j = 1U; j > 0U; j--) {  /* on the right and center lane */
                   if(lane_open_pts[i][j] == true) {
                     car_d = LANE_CENTER(j);
                   }
                 }
               }
             }
+            cout << "Test6" << endl;
 
             //TODO: is this needed ?
             if(prev_size > 0) {
@@ -490,6 +514,7 @@ int main() {
             }
 
             target_Velocity += accel_val;
+            cout << target_Velocity << endl;
 
             vector<double> ptsx;
             vector<double> ptsy;
@@ -556,7 +581,7 @@ int main() {
             double target_dist = distance(0.0, 0.0, target_x, target_y);
 
             double x_add_on = 0.0;
-            double N = ( target_dist / (PERIODICITY_MS * ref_vel / MlPH_TO_MrPS) );
+            double N = ( target_dist / (PERIODICITY_MS * target_Velocity / MlPH_TO_MrPS) );
             double step_size = target_x / N;
 
             for(int i=1; i <= 50 - prev_size; i++) {
@@ -576,6 +601,7 @@ int main() {
 
               next_x_vals.push_back(x_point);
               next_y_vals.push_back(y_point);
+            }
             #endif
 
             #if(SMOOTH_TRAJ_CODE_FROM_CLASS == STD_ON)
