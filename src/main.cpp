@@ -30,7 +30,7 @@ using json = nlohmann::json;
 #define LANE_3 (2U)
 
 /* Algorithm Configurable parameters */
-#define NEIGHBOUR_GAP_M    (5.0)
+#define NEIGHBOUR_GAP_M     (15.0)
 #define SEPERATION_GAP_M    (30.0)
 #define FUTURE_PTS_CNT      (50U)
 #define PRV_STAT_NRLY_EMPTY (2U)
@@ -38,7 +38,7 @@ using json = nlohmann::json;
 /* Speed limits */
 #define MAX_SPEED_LIMIT  (50.0)
 #define IDLE_SPEED_LIMIT (49.5)
-#define HIGH_SPEED_LIMIT (45.0)
+#define HIGH_SPEED_LIMIT (48.5)
 #define MilePerHr_TO_MeterPerSec (2.24)
 #define ACCL_STEP        (MilePerHr_TO_MeterPerSec / 10.0)
 #define LOW_ACCL_STEP    (ACCL_STEP / 2.0)
@@ -366,7 +366,7 @@ int main() {
 
           if(true == inLaneTransition) {
             /* currently executing lane transition manuver, no planning done. */
-            if( fabs(LANE_CENTER(Car_laneIdx) - car_d) > 0.1 ) {
+            if( fabs(LANE_CENTER(Car_laneIdx) - car_d) < 0.1 ) {
               inLaneTransition = false;
             }
           }
@@ -447,7 +447,7 @@ int main() {
           double ref_x   = car_x;
           double ref_y   = car_y;
           double ref_yaw = deg2rad(car_yaw);
-          double neg_ref_yaw = 0-deg2rad(car_yaw);
+          double neg_ref_yaw = 0-ref_yaw;
 
 
           if(prev_size < PRV_STAT_NRLY_EMPTY) {
@@ -465,6 +465,8 @@ int main() {
             ref_y   = previous_path_y[prev_size - 1];
             double prev_ref_x = previous_path_x[prev_size - 2];
             double prev_ref_y = previous_path_y[prev_size - 2];
+            ref_yaw = atan2(ref_y-prev_ref_y, ref_x-prev_ref_x);
+            neg_ref_yaw = 0-ref_yaw;
 
             ptsx.push_back(prev_ref_x);
             ptsx.push_back(ref_x);
@@ -501,30 +503,30 @@ int main() {
             next_y_vals.push_back(previous_path_y[i]);
           }
 
-          double target_x = SEPERATION_GAP_M;
+          double target_x = 1.2 * SEPERATION_GAP_M;
           double target_y = s(target_x);
           double target_dist = distance(0.0, 0.0, target_x, target_y);
 
           double x_add_on = 0.0;
 
+          if(FULL_DECEL == slowdown) {
+            target_Velocity -= ACCL_STEP;
+          }
+          else if(LIGHT_DECEL == slowdown) {
+            target_Velocity -= LOW_ACCL_STEP;
+          }
+          else if(target_Velocity < HIGH_SPEED_LIMIT) {
+              target_Velocity += ACCL_STEP;
+          }
+          else if(target_Velocity < IDLE_SPEED_LIMIT) {
+            /* Slow down acceleration to decrease change of crossing the speed limit */
+            target_Velocity += LOW_ACCL_STEP;
+          }
+
+          const double N = ( target_dist / (PERIODICITY_MS * target_Velocity / MilePerHr_TO_MeterPerSec) );
+          const double step_size = target_x / N;
+
           for(int i=1; i <= 50 - prev_size; i++) {
-
-            if(FULL_DECEL == slowdown) {
-              target_Velocity -= ACCL_STEP;
-            }
-            else if(LIGHT_DECEL == slowdown) {
-              target_Velocity -= LOW_ACCL_STEP;
-            }
-            else if(target_Velocity < HIGH_SPEED_LIMIT) {
-                target_Velocity += ACCL_STEP;
-            }
-            else if(target_Velocity < IDLE_SPEED_LIMIT) {
-              /* Slow down acceleration to decrease change of crossing the speed limit */
-              target_Velocity += LOW_ACCL_STEP;
-            }
-
-            const double N = ( target_dist / (PERIODICITY_MS * target_Velocity / MilePerHr_TO_MeterPerSec) );
-            const double step_size = target_x / N;
 
             double x_point = x_add_on + step_size;
             double y_point = s(x_point);
