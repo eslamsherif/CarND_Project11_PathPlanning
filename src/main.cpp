@@ -30,6 +30,7 @@ using json = nlohmann::json;
 #define LANE_3 (2U)
 
 /* Algorithm Configurable parameters */
+#define NEIGHBOUR_GAP_M    (5.0)
 #define SEPERATION_GAP_M    (30.0)
 #define FUTURE_PTS_CNT      (50U)
 #define PRV_STAT_NRLY_EMPTY (2U)
@@ -41,6 +42,10 @@ using json = nlohmann::json;
 #define MilePerHr_TO_MeterPerSec (2.24)
 #define ACCL_STEP        (MilePerHr_TO_MeterPerSec / 10.0)
 #define LOW_ACCL_STEP    (ACCL_STEP / 2.0)
+#define INVALID_VAL      (-1.0)
+#define NO_DECEL         (0.0)
+#define LIGHT_DECEL      (1.0)
+#define FULL_DECEL       (2.0)
 
 /* Data structure parsing support */
 #define SNSR_FSN_ID_IDX   (0U)
@@ -325,7 +330,9 @@ int main() {
             const double target_speed  = sqrt( temp.vx * temp.vx + temp.vy * temp.vy );
             const double pred_target_s = temp.s + ( (double) prev_size * PERIODICITY_MS * target_speed );
 
-            if( ( pred_target_s > car_s ) && ( (pred_target_s - car_s) < (1.2 * SEPERATION_GAP_M) ) ) {
+            if(    ( ( pred_target_s > car_s ) && ( (pred_target_s - car_s) < (1.2 * SEPERATION_GAP_M) ) )
+                || ( fabs(pred_target_s - car_s) < NEIGHBOUR_GAP_M )
+              ) {
               /* Target car is predicted to be infront of us, find in which lane it should be placed. */
               switch(LANE_IDX(temp.d)) {
                 case LANE_1:
@@ -352,7 +359,7 @@ int main() {
           const int lane1_car_cnt = lane1_infrontCars.size();
           const int lane2_car_cnt = lane2_infrontCars.size();
           const int lane3_car_cnt = lane3_infrontCars.size();
-          int slowdown = -1;
+          int slowdown = INVALID_VAL;
           static bool inLaneTransition = false;
           /* Find Initial lane based on car current pos */
           static int Car_laneIdx;
@@ -372,17 +379,17 @@ int main() {
                 /* We can only keep on lane 1 or move to lane 2 */
                 if(lane1_car_cnt == 0) {
                   /* No cars in lane 1 keep with max speed */
-                  slowdown = false;
+                  slowdown = NO_DECEL;
                 }
                 else if(lane2_car_cnt == 0) {
                   /* Cars found in lane 1 and No cars in lane 2 switch to it*/
                   Car_laneIdx = LANE_2;
-                  slowdown = true;
+                  slowdown = LIGHT_DECEL;
                   inLaneTransition = true;
                 }
                 else {
                   /* All lanes are busy just reduce car speed. */
-                  slowdown = true;
+                  slowdown = LIGHT_DECEL;
                 }
                 break;
               case LANE_2:
@@ -390,23 +397,23 @@ int main() {
                 /* We can keep on lane 2 or move to lane 1 or 3 */
                 if(lane2_car_cnt == 0) {
                   /* No cars in lane 2 keep with max speed */
-                  slowdown = false;
+                  slowdown = NO_DECEL;
                 }
                 else if(lane1_car_cnt == 0) {
                   /* Cars found in lane 1 and No cars in lane 1 switch to it*/
                   Car_laneIdx = LANE_1;
-                  slowdown = true;
+                  slowdown = LIGHT_DECEL;
                   inLaneTransition = true;
                 }
                 else if(lane3_car_cnt == 0) {
                   /* Cars found in lane 1 and No cars in lane 1 switch to it*/
                   Car_laneIdx = LANE_3;
-                  slowdown = true;
+                  slowdown = LIGHT_DECEL;
                   inLaneTransition = true;
                 }
                 else {
                   /* All lanes are busy just reduce car speed. */
-                  slowdown = true;
+                  slowdown = FULL_DECEL;
                 }
                 break;
               case LANE_3:
@@ -414,17 +421,17 @@ int main() {
                 /* We can only keep on lane 3 or move to lane 2 */
                 if(lane3_car_cnt == 0) {
                   /* No cars in lane 3 keep with max speed */
-                  slowdown = false;
+                  slowdown = NO_DECEL;
                 }
                 else if(lane2_car_cnt == 0) {
                   /* Cars found in lane 3 and No cars in lane 2 switch to it*/
                   Car_laneIdx = LANE_2;
-                  slowdown = true;
+                  slowdown = LIGHT_DECEL;
                   inLaneTransition = true;
                 }
                 else {
                   /* All lanes are busy just reduce car speed. */
-                  slowdown = true;
+                  slowdown = LIGHT_DECEL;
                 }
                 break;
               default:
@@ -502,16 +509,18 @@ int main() {
 
           for(int i=1; i <= 50 - prev_size; i++) {
 
-            if(true == slowdown) {
+            if(FULL_DECEL == slowdown) {
               target_Velocity -= ACCL_STEP;
             }
-            else {
-              if(target_Velocity < HIGH_SPEED_LIMIT) {
+            else if(LIGHT_DECEL == slowdown) {
+              target_Velocity -= LOW_ACCL_STEP;
+            }
+            else if(target_Velocity < HIGH_SPEED_LIMIT) {
                 target_Velocity += ACCL_STEP;
-              }
-              else if(target_Velocity < IDLE_SPEED_LIMIT) { /* Slow down acceleration to decrease change of crossing the speed limit */
-                target_Velocity += LOW_ACCL_STEP;
-              }
+            }
+            else if(target_Velocity < IDLE_SPEED_LIMIT) {
+              /* Slow down acceleration to decrease change of crossing the speed limit */
+              target_Velocity += LOW_ACCL_STEP;
             }
 
             const double N = ( target_dist / (PERIODICITY_MS * target_Velocity / MilePerHr_TO_MeterPerSec) );
