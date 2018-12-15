@@ -325,7 +325,7 @@ int main() {
             const double target_speed  = sqrt( temp.vx * temp.vx + temp.vy * temp.vy );
             const double pred_target_s = temp.s + ( (double) prev_size * PERIODICITY_MS * target_speed );
 
-            if( ( pred_target_s > car_s ) && ( (pred_target_s - car_s) < (1.5 * SEPERATION_GAP_M) ) ) {
+            if( ( pred_target_s > car_s ) && ( (pred_target_s - car_s) < (1.2 * SEPERATION_GAP_M) ) ) {
               /* Target car is predicted to be infront of us, find in which lane it should be placed. */
               switch(LANE_IDX(temp.d)) {
                 case LANE_1:
@@ -380,15 +380,6 @@ int main() {
                   slowdown = true;
                   inLaneTransition = true;
                 }
-                else if(lane3_car_cnt == 0) {
-                  /* Cars found in both lane 1 and 2, check lane 3 if empty
-                   * (if lane 3 is empty it may be worth it to move to lane 2 for
-                   * future moves but slow down as lane 2 has cars.
-                   */
-                  Car_laneIdx = LANE_2;
-                  slowdown = true;
-                  inLaneTransition = true;
-                }
                 else {
                   /* All lanes are busy just reduce car speed. */
                   slowdown = true;
@@ -427,15 +418,6 @@ int main() {
                 }
                 else if(lane2_car_cnt == 0) {
                   /* Cars found in lane 3 and No cars in lane 2 switch to it*/
-                  Car_laneIdx = LANE_2;
-                  slowdown = true;
-                  inLaneTransition = true;
-                }
-                else if(lane1_car_cnt == 0) {
-                  /* Cars found in both lane 3 and 2, check lane 1 if empty
-                   * (if lane 1 is empty it may be worth it to move to lane 2 for
-                   * future moves.
-                   */
                   Car_laneIdx = LANE_2;
                   slowdown = true;
                   inLaneTransition = true;
