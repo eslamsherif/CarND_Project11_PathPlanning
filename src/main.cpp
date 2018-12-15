@@ -297,9 +297,6 @@ int main() {
 
           const int prev_size = previous_path_x.size();
 
-          /* Find Initial lane based on car current pos */
-          int Car_laneIdx = LANE_IDX(car_d);
-
           /* have a reference velocity to target */
           static double target_Velocity = 0;
           if(prev_size > 0) {
@@ -328,7 +325,7 @@ int main() {
             const double target_speed  = sqrt( temp.vx * temp.vx + temp.vy * temp.vy );
             const double pred_target_s = temp.s + ( (double) prev_size * PERIODICITY_MS * target_speed );
 
-            if( ( pred_target_s > car_s ) && ( (pred_target_s - car_s) < SEPERATION_GAP_M ) ) {
+            if( ( pred_target_s > car_s ) && ( (pred_target_s - car_s) < (1.5 * SEPERATION_GAP_M) ) ) {
               /* Target car is predicted to be infront of us, find in which lane it should be placed. */
               switch(LANE_IDX(temp.d)) {
                 case LANE_1:
@@ -356,84 +353,103 @@ int main() {
           const int lane2_car_cnt = lane2_infrontCars.size();
           const int lane3_car_cnt = lane3_infrontCars.size();
           int slowdown = -1;
+          static bool inLaneTransition = false;
+          /* Find Initial lane based on car current pos */
+          static int Car_laneIdx;
 
-          switch(Car_laneIdx) {
-            case LANE_1:
-              /* | Car |     |     |  */
-              /* We can only keep on lane 1 or move to lane 2 */
-              if(lane1_car_cnt == 0) {
-                /* No cars in lane 1 keep with max speed */
-                slowdown = false;
-              }
-              else if(lane2_car_cnt == 0) {
-                /* Cars found in lane 1 and No cars in lane 2 switch to it with max speed */
-                Car_laneIdx = LANE_2;
-                slowdown = false;
-              }
-              else if(lane3_car_cnt == 0) {
-                /* Cars found in both lane 1 and 2, check lane 3 if empty
-                 * (if lane 3 is empty it may be worth it to move to lane 2 for
-                 * future moves but slow down as lane 2 has cars.
-                 */
-                Car_laneIdx = LANE_2;
+          if(true == inLaneTransition) {
+            /* currently executing lane transition manuver, no planning done. */
+            if( fabs(LANE_CENTER(Car_laneIdx) - car_d) > 0.1 ) {
+              inLaneTransition = false;
+            }
+          }
+          else {
+            Car_laneIdx = LANE_IDX(car_d);
+            /* No lane transition, plan path as needed */
+            switch(Car_laneIdx) {
+              case LANE_1:
+                /* | Car |     |     |  */
+                /* We can only keep on lane 1 or move to lane 2 */
+                if(lane1_car_cnt == 0) {
+                  /* No cars in lane 1 keep with max speed */
+                  slowdown = false;
+                }
+                else if(lane2_car_cnt == 0) {
+                  /* Cars found in lane 1 and No cars in lane 2 switch to it*/
+                  Car_laneIdx = LANE_2;
+                  slowdown = true;
+                  inLaneTransition = true;
+                }
+                else if(lane3_car_cnt == 0) {
+                  /* Cars found in both lane 1 and 2, check lane 3 if empty
+                   * (if lane 3 is empty it may be worth it to move to lane 2 for
+                   * future moves but slow down as lane 2 has cars.
+                   */
+                  Car_laneIdx = LANE_2;
+                  slowdown = true;
+                  inLaneTransition = true;
+                }
+                else {
+                  /* All lanes are busy just reduce car speed. */
+                  slowdown = true;
+                }
+                break;
+              case LANE_2:
+                /* |     | Car |     |  */
+                /* We can keep on lane 2 or move to lane 1 or 3 */
+                if(lane2_car_cnt == 0) {
+                  /* No cars in lane 2 keep with max speed */
+                  slowdown = false;
+                }
+                else if(lane1_car_cnt == 0) {
+                  /* Cars found in lane 1 and No cars in lane 1 switch to it*/
+                  Car_laneIdx = LANE_1;
+                  slowdown = true;
+                  inLaneTransition = true;
+                }
+                else if(lane3_car_cnt == 0) {
+                  /* Cars found in lane 1 and No cars in lane 1 switch to it*/
+                  Car_laneIdx = LANE_3;
+                  slowdown = true;
+                  inLaneTransition = true;
+                }
+                else {
+                  /* All lanes are busy just reduce car speed. */
+                  slowdown = true;
+                }
+                break;
+              case LANE_3:
+                /* |     |     | Car |  */
+                /* We can only keep on lane 3 or move to lane 2 */
+                if(lane3_car_cnt == 0) {
+                  /* No cars in lane 3 keep with max speed */
+                  slowdown = false;
+                }
+                else if(lane2_car_cnt == 0) {
+                  /* Cars found in lane 3 and No cars in lane 2 switch to it*/
+                  Car_laneIdx = LANE_2;
+                  slowdown = true;
+                  inLaneTransition = true;
+                }
+                else if(lane1_car_cnt == 0) {
+                  /* Cars found in both lane 3 and 2, check lane 1 if empty
+                   * (if lane 1 is empty it may be worth it to move to lane 2 for
+                   * future moves.
+                   */
+                  Car_laneIdx = LANE_2;
+                  slowdown = true;
+                  inLaneTransition = true;
+                }
+                else {
+                  /* All lanes are busy just reduce car speed. */
+                  slowdown = true;
+                }
+                break;
+              default:
+                cout << "Fatal Error, Out Car not in possible lane";
                 slowdown = true;
-              }
-              else {
-                /* All lanes are busy just reduce car speed. */
-                slowdown = true;
-              }
-              break;
-            case LANE_2:
-              /* |     | Car |     |  */
-              /* We can keep on lane 2 or move to lane 1 or 3 */
-              if(lane2_car_cnt == 0) {
-                /* No cars in lane 2 keep with max speed */
-                slowdown = false;
-              }
-              else if(lane1_car_cnt == 0) {
-                /* Cars found in lane 1 and No cars in lane 1 switch to it with max speed */
-                Car_laneIdx = LANE_1;
-                slowdown = false;
-              }
-              else if(lane3_car_cnt == 0) {
-                /* Cars found in lane 1 and No cars in lane 1 switch to it with max speed */
-                Car_laneIdx = LANE_3;
-                slowdown = false;
-              }
-              else {
-                /* All lanes are busy just reduce car speed. */
-                slowdown = true;
-              }
-              break;
-            case LANE_3:
-              /* |     |     | Car |  */
-              /* We can only keep on lane 3 or move to lane 2 */
-              if(lane3_car_cnt == 0) {
-                /* No cars in lane 3 keep with max speed */
-                slowdown = false;
-              }
-              else if(lane2_car_cnt == 0) {
-                /* Cars found in lane 3 and No cars in lane 2 switch to it with max speed */
-                Car_laneIdx = LANE_2;
-                slowdown = false;
-              }
-              else if(lane1_car_cnt == 0) {
-                /* Cars found in both lane 3 and 2, check lane 1 if empty
-                 * (if lane 1 is empty it may be worth it to move to lane 2 for
-                 * future moves.
-                 */
-                Car_laneIdx = LANE_2;
-                slowdown = true;
-              }
-              else {
-                /* All lanes are busy just reduce car speed. */
-                slowdown = true;
-              }
-              break;
-            default:
-              cout << "Fatal Error, Out Car not in possible lane";
-              slowdown = true;
-              break;
+                break;
+            }
           }
 
           vector<double> ptsx;
