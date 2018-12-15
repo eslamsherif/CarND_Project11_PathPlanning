@@ -10,6 +10,10 @@ Implement a Path planning algorithm controling a car traversing around a simulat
 
 ---
 
+[//]: # (Image References)
+
+[Output]: ./Images/Output.png
+
 ### Reflection
 
 This project allows for understanding the high level reasoning, abstractions and data flow needed to achieve a human-like driving behaviour.The udacity simulator provides a simulated interactive car on a highway, it also provides traffic with random behaviour to simulate real life scenario. The path planning algroithm should observe other cars around the vehicle and plan a safe path maximizing speed without risking discomfort of onboard passengers.
@@ -91,4 +95,8 @@ If accelerating at high speed --> Apply light acceleration value. (to decrease p
 
 ---
 
+### Output
 
+![Output][Output]
+
+I have tested this project for long time since it has no formal way of reproducing a faulty scenario but to keep drinving on the high way till it occurs, I have a lot of test runs the longest on is shown above of 35miles with no incidents in 46 min which averages out to around 46.5 mph so I consider this a reasonble speed compared to the maximum speed limit of 50mph.
