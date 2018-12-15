@@ -25,6 +25,10 @@ using json = nlohmann::json;
 #define LANE_END(idx)    ( ( idx + 1.0 ) * LANE_WIDTH )
 #define LANE_IDX(car_d)  ( (int) ( (int) car_d / (int) LANE_WIDTH ) )
 
+#define LANE_1 (0U)
+#define LANE_2 (1U)
+#define LANE_3 (2U)
+
 /* Algorithm Configurable parameters */
 #define SEPERATION_GAP_M    (30.0)
 #define FUTURE_PTS_CNT      (50U)
@@ -33,10 +37,10 @@ using json = nlohmann::json;
 /* Speed limits */
 #define MAX_SPEED_LIMIT  (50.0)
 #define IDLE_SPEED_LIMIT (49.5)
-#define HIGH_SPEED_LIMIT (40.0)
-#define MID_SPEED_LIMIT  (30.0)
-#define LOW_SPEED_LIMIT  (20.0)
-#define MlPH_TO_MrPS     (2.24)
+#define HIGH_SPEED_LIMIT (45.0)
+#define MilePerHr_TO_MeterPerSec (2.24)
+#define ACCL_STEP        (MilePerHr_TO_MeterPerSec / 10.0)
+#define LOW_ACCL_STEP    (ACCL_STEP / 2.0)
 
 /* Data structure parsing support */
 #define SNSR_FSN_ID_IDX   (0U)
@@ -51,6 +55,21 @@ using json = nlohmann::json;
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
+
+struct car_properties {
+  int idx;
+  double x;
+  double y;
+  double vx;
+  double vy;
+  double v;
+  double s;
+  double d;
+};
+
+//from http://www.cplusplus.com/forum/general/97555/
+//TODO: check if asc or des order needed.
+bool carProp_Compare(car_properties lhs, car_properties rhs) { return lhs.s < rhs.s;}
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -279,40 +298,142 @@ int main() {
           const int prev_size = previous_path_x.size();
 
           /* Find Initial lane based on car current pos */
-          int lane_idx = LANE_IDX(car_d);
+          int Car_laneIdx = LANE_IDX(car_d);
 
           /* have a reference velocity to target */
-          static double ref_vel = 0;
+          static double target_Velocity = 0;
           if(prev_size > 0) {
             car_s = end_path_s;
           }
 
-          bool too_close = false;
+          /* Prediction phase, scan all detected objects to determine the
+           * state of the enviornment.
+           */
 
-          //find ref_vel to use
+          vector <car_properties> lane1_infrontCars;
+          vector <car_properties> lane2_infrontCars;
+          vector <car_properties> lane3_infrontCars;
+
           for(int i=0; i < sensor_fusion.size(); i++) {
-            //car in my lane
-            float d = sensor_fusion[i][SNSR_FSN_D_IDX];
-            if( ( d > LANE_BEGIN(lane_idx)) && ( d < LANE_END(lane_idx)) ) {
-              double vx = sensor_fusion[i][SNSR_FSN_VX_IDX];
-              double vy = sensor_fusion[i][SNSR_FSN_VY_IDX];
+            car_properties temp;
 
-              double speed = sqrt( vx*vx + vy*vy);
-              double curr_car_s = sensor_fusion[i][SNSR_FSN_S_IDX];
+            temp.idx = sensor_fusion[i][SNSR_FSN_ID_IDX];
+            temp.x   = sensor_fusion[i][SNSR_FSN_X_IDX];
+            temp.y   = sensor_fusion[i][SNSR_FSN_Y_IDX];
+            temp.vx  = sensor_fusion[i][SNSR_FSN_VX_IDX];
+            temp.vy  = sensor_fusion[i][SNSR_FSN_VY_IDX];
+            temp.s   = sensor_fusion[i][SNSR_FSN_S_IDX];
+            temp.d   = sensor_fusion[i][SNSR_FSN_D_IDX];
 
-              curr_car_s += ( (double) prev_size * PERIODICITY_MS * speed ); //predict car current S coordinates
+            const double target_speed  = sqrt( temp.vx * temp.vx + temp.vy * temp.vy );
+            const double pred_target_s = temp.s + ( (double) prev_size * PERIODICITY_MS * target_speed );
 
-              if( ( curr_car_s > car_s ) && ( (curr_car_s - car_s) < SEPERATION_GAP_M ) ) {
-                too_close = true;
+            if( ( pred_target_s > car_s ) && ( (pred_target_s - car_s) < SEPERATION_GAP_M ) ) {
+              /* Target car is predicted to be infront of us, find in which lane it should be placed. */
+              switch(LANE_IDX(temp.d)) {
+                case LANE_1:
+                  lane1_infrontCars.push_back(temp);
+                  break;
+                case LANE_2:
+                  lane2_infrontCars.push_back(temp);
+                  break;
+                case LANE_3:
+                  lane3_infrontCars.push_back(temp);
+                  break;
+                default:
+                  cout << "Fatal Error, Target Car not in possible lane";
+                  break;
               }
             }
           }
 
-          if(true == too_close) {
-            ref_vel -= .224;
-          }
-          else if(ref_vel < IDLE_SPEED_LIMIT) {
-            ref_vel += .224;
+          /* We know the cars infornt of us in each lane now, time to plan
+           * The best action to follow. The plan should output:
+           * Steering output (Which lane we should be in)
+           * Velocity output (At what speed should we move)
+           */
+          const int lane1_car_cnt = lane1_infrontCars.size();
+          const int lane2_car_cnt = lane2_infrontCars.size();
+          const int lane3_car_cnt = lane3_infrontCars.size();
+          int slowdown = -1;
+
+          switch(Car_laneIdx) {
+            case LANE_1:
+              /* | Car |     |     |  */
+              /* We can only keep on lane 1 or move to lane 2 */
+              if(lane1_car_cnt == 0) {
+                /* No cars in lane 1 keep with max speed */
+                slowdown = false;
+              }
+              else if(lane2_car_cnt == 0) {
+                /* Cars found in lane 1 and No cars in lane 2 switch to it with max speed */
+                Car_laneIdx = LANE_2;
+                slowdown = false;
+              }
+              else if(lane3_car_cnt == 0) {
+                /* Cars found in both lane 1 and 2, check lane 3 if empty
+                 * (if lane 3 is empty it may be worth it to move to lane 2 for
+                 * future moves but slow down as lane 2 has cars.
+                 */
+                Car_laneIdx = LANE_2;
+                slowdown = true;
+              }
+              else {
+                /* All lanes are busy just reduce car speed. */
+                slowdown = true;
+              }
+              break;
+            case LANE_2:
+              /* |     | Car |     |  */
+              /* We can keep on lane 2 or move to lane 1 or 3 */
+              if(lane2_car_cnt == 0) {
+                /* No cars in lane 2 keep with max speed */
+                slowdown = false;
+              }
+              else if(lane1_car_cnt == 0) {
+                /* Cars found in lane 1 and No cars in lane 1 switch to it with max speed */
+                Car_laneIdx = LANE_1;
+                slowdown = false;
+              }
+              else if(lane3_car_cnt == 0) {
+                /* Cars found in lane 1 and No cars in lane 1 switch to it with max speed */
+                Car_laneIdx = LANE_3;
+                slowdown = false;
+              }
+              else {
+                /* All lanes are busy just reduce car speed. */
+                slowdown = true;
+              }
+              break;
+            case LANE_3:
+              /* |     |     | Car |  */
+              /* We can only keep on lane 3 or move to lane 2 */
+              if(lane3_car_cnt == 0) {
+                /* No cars in lane 3 keep with max speed */
+                slowdown = false;
+              }
+              else if(lane2_car_cnt == 0) {
+                /* Cars found in lane 3 and No cars in lane 2 switch to it with max speed */
+                Car_laneIdx = LANE_2;
+                slowdown = false;
+              }
+              else if(lane1_car_cnt == 0) {
+                /* Cars found in both lane 3 and 2, check lane 1 if empty
+                 * (if lane 1 is empty it may be worth it to move to lane 2 for
+                 * future moves.
+                 */
+                Car_laneIdx = LANE_2;
+                slowdown = true;
+              }
+              else {
+                /* All lanes are busy just reduce car speed. */
+                slowdown = true;
+              }
+              break;
+            default:
+              cout << "Fatal Error, Out Car not in possible lane";
+              slowdown = true;
+              break;
           }
 
           vector<double> ptsx;
@@ -347,9 +468,9 @@ int main() {
             ptsy.push_back(ref_y);
           }
 
-          vector<double> next_wp0 = getXY(car_s + (SEPERATION_GAP_M)      , LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp1 = getXY(car_s + (SEPERATION_GAP_M * 2.0), LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp2 = getXY(car_s + (SEPERATION_GAP_M * 3.0), LANE_CENTER(lane_idx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp0 = getXY(car_s + (SEPERATION_GAP_M)      , LANE_CENTER(Car_laneIdx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp1 = getXY(car_s + (SEPERATION_GAP_M * 2.0), LANE_CENTER(Car_laneIdx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp2 = getXY(car_s + (SEPERATION_GAP_M * 3.0), LANE_CENTER(Car_laneIdx), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
           ptsx.push_back(next_wp0[0]);
           ptsx.push_back(next_wp1[0]);
@@ -380,10 +501,24 @@ int main() {
           double target_dist = distance(0.0, 0.0, target_x, target_y);
 
           double x_add_on = 0.0;
-          double N = ( target_dist / (PERIODICITY_MS * ref_vel / MlPH_TO_MrPS) );
-          double step_size = target_x / N;
 
           for(int i=1; i <= 50 - prev_size; i++) {
+
+            if(true == slowdown) {
+              target_Velocity -= ACCL_STEP;
+            }
+            else {
+              if(target_Velocity < HIGH_SPEED_LIMIT) {
+                target_Velocity += ACCL_STEP;
+              }
+              else if(target_Velocity < IDLE_SPEED_LIMIT) { /* Slow down acceleration to decrease change of crossing the speed limit */
+                target_Velocity += LOW_ACCL_STEP;
+              }
+            }
+
+            const double N = ( target_dist / (PERIODICITY_MS * target_Velocity / MilePerHr_TO_MeterPerSec) );
+            const double step_size = target_x / N;
+
             double x_point = x_add_on + step_size;
             double y_point = s(x_point);
 
